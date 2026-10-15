@@ -1,0 +1,78 @@
+# Postal v3 — self-contained compose (web + smtp + worker + MariaDB).
+# Official image: ghcr.io/postalserver/postal, docs: https://docs.postalserver.io/
+#
+# First run:
+#   mkdir -p config && openssl genrsa -out config/signing.key 2048
+#   cp config/postal.yml.example config/postal.yml  # set web_hostname + DB password, host: mariadb
+#   docker compose up -d mariadb && docker compose run --rm runner postal initialize
+#   docker compose up -d && docker compose run --rm runner postal make-user
+# Web UI: http://localhost:5000
+services:
+  mariadb:
+    image: mariadb:10.11
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-postal}
+      MARIADB_DATABASE: postal
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    # ponytail: 256M log file supports ~25MB messages; raise if you raise max_message_size
+    command: --innodb-log-file-size=256M
+    healthcheck:
+      test: ["CMD", "mariadb-admin", "ping", "-h", "localhost", "-p${MARIADB_ROOT_PASSWORD:-postal}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    image: ghcr.io/postalserver/postal:${POSTAL_VERSION:-3}
+    command: postal web-server
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./config:/config
+    environment:
+      WAIT_FOR_TARGETS: mariadb:3306
+    restart: unless-stopped
+
+  smtp:
+    image: ghcr.io/postalserver/postal:${POSTAL_VERSION:-3}
+    command: postal smtp-server
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    ports:
+      - "25:25"
+    cap_add:
+      - NET_BIND_SERVICE
+    volumes:
+      - ./config:/config
+    environment:
+      WAIT_FOR_TARGETS: mariadb:3306
+    restart: unless-stopped
+
+  worker:
+    image: ghcr.io/postalserver/postal:${POSTAL_VERSION:-3}
+    command: postal worker
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    volumes:
+      - ./config:/config
+    environment:
+      WAIT_FOR_TARGETS: mariadb:3306
+    restart: unless-stopped
+
+  runner:
+    image: ghcr.io/postalserver/postal:${POSTAL_VERSION:-3}
+    profiles: ["tools"]
+    volumes:
+      - ./config:/config
+    environment:
+      WAIT_FOR_TARGETS: mariadb:3306
+
+volumes:
+  mariadb-data:
