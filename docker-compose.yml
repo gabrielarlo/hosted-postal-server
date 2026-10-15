@@ -1,78 +1,103 @@
-# Postal v3 — self-contained compose (web + smtp + worker + MariaDB).
-# Official image: ghcr.io/postalserver/postal, docs: https://docs.postalserver.io/
+# Postal v3.3.7 — self-contained compose (web + smtp + worker + MariaDB).
+# Postal supports MariaDB only (no Postgres). Docs: https://docs.postalserver.io/
 #
 # First run:
 #   mkdir -p config && openssl genrsa -out config/signing.key 2048
-#   cp config/postal.yml.example config/postal.yml  # set web_hostname + DB password, host: mariadb
+#   create config/postal.yml (web_hostname etc., DB host: mariadb — env below overrides DB)
 #   docker compose up -d mariadb && docker compose run --rm runner postal initialize
 #   docker compose up -d && docker compose run --rm runner postal make-user
-# Web UI: http://localhost:5000
+# Web UI: http://localhost:5001 (5000 is taken by macOS AirPlay)
+x-postal-env: &postal-env
+  WAIT_FOR_TARGETS: ${DATABASE_HOST:-mariadb}:${DATABASE_PORT:-3306}
+  WEB_SERVER_DEFAULT_BIND_ADDRESS: 0.0.0.0
+  MAIN_DB_HOST: ${DATABASE_HOST:-mariadb}
+  MAIN_DB_PORT: ${DATABASE_PORT:-3306}
+  MAIN_DB_DATABASE: ${DATABASE_NAME:-postal}
+  MAIN_DB_USERNAME: ${DATABASE_USERNAME:-root}
+  MAIN_DB_PASSWORD: ${DATABASE_PASSWORD:-postal}
+  MESSAGE_DB_HOST: ${DATABASE_HOST:-mariadb}
+  MESSAGE_DB_PORT: ${DATABASE_PORT:-3306}
+  MESSAGE_DB_USERNAME: ${DATABASE_USERNAME:-root}
+  MESSAGE_DB_PASSWORD: ${DATABASE_PASSWORD:-postal}
+  MESSAGE_DB_DATABASE_NAME_PREFIX: ${DATABASE_NAME:-postal}
+
 services:
   mariadb:
     image: mariadb:10.11
     restart: unless-stopped
     environment:
-      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-postal}
-      MARIADB_DATABASE: postal
+      MARIADB_ROOT_PASSWORD: ${DATABASE_PASSWORD:-postal}
+      MARIADB_DATABASE: ${DATABASE_NAME:-postal}
     volumes:
       - mariadb-data:/var/lib/mysql
+    ports:
+      - "3307:3306" # local inspection; host 3306 is your machine mysqld
     # ponytail: 256M log file supports ~25MB messages; raise if you raise max_message_size
     command: --innodb-log-file-size=256M
     healthcheck:
-      test: ["CMD", "mariadb-admin", "ping", "-h", "localhost", "-p${MARIADB_ROOT_PASSWORD:-postal}"]
+      test: ["CMD", "mariadb-admin", "ping", "-h", "localhost", "-p${DATABASE_PASSWORD:-postal}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   web:
-    image: ghcr.io/postalserver/postal:${POSTAL_VERSION:-3}
+    image: ghcr.io/postalserver/postal:${POSTAL_VERSION:-3.3.7}
+    platform: linux/amd64
     command: postal web-server
     depends_on:
       mariadb:
         condition: service_healthy
     ports:
-      - "5000:5000"
+      - "5001:5000" # host 5000 is macOS AirPlay; UI at http://localhost:5001
     volumes:
       - ./config:/config
-    environment:
-      WAIT_FOR_TARGETS: mariadb:3306
+    environment: *postal-env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
   smtp:
-    image: ghcr.io/postalserver/postal:${POSTAL_VERSION:-3}
+    image: ghcr.io/postalserver/postal:${POSTAL_VERSION:-3.3.7}
+    platform: linux/amd64
     command: postal smtp-server
     depends_on:
       mariadb:
         condition: service_healthy
     ports:
       - "25:25"
+      - "587:25" # app submission port, same server
     cap_add:
       - NET_BIND_SERVICE
     volumes:
       - ./config:/config
-    environment:
-      WAIT_FOR_TARGETS: mariadb:3306
+    environment: *postal-env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
   worker:
-    image: ghcr.io/postalserver/postal:${POSTAL_VERSION:-3}
+    image: ghcr.io/postalserver/postal:${POSTAL_VERSION:-3.3.7}
+    platform: linux/amd64
     command: postal worker
     depends_on:
       mariadb:
         condition: service_healthy
     volumes:
       - ./config:/config
-    environment:
-      WAIT_FOR_TARGETS: mariadb:3306
+    environment: *postal-env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
   runner:
-    image: ghcr.io/postalserver/postal:${POSTAL_VERSION:-3}
+    image: ghcr.io/postalserver/postal:${POSTAL_VERSION:-3.3.7}
+    platform: linux/amd64
     profiles: ["tools"]
     volumes:
       - ./config:/config
-    environment:
-      WAIT_FOR_TARGETS: mariadb:3306
+    environment: *postal-env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   mariadb-data:
